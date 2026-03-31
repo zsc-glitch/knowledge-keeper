@@ -1,0 +1,30 @@
+{
+  "id": "knowledge-keeper",
+  "name": "Knowledge Keeper",
+  "description": "智能知识管理 - 自动提取对话要点、整理知识库、语义搜索历史知识",
+  "version": "0.1.0",
+  "author": "zsc-glitch",
+  "homepage": "https://github.com/zsc-glitch/knowledge-keeper",
+  "skills": ["skills/knowledge-keeper"],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "vaultDir": {
+        "type": "string",
+        "description": "知识库存储目录",
+        "default": "~/.knowledge-vault"
+      },
+      "autoExtract": {
+        "type": "boolean",
+        "description": "自动提取对话要点",
+        "default": false
+      },
+      "reviewReminder": {
+        "type": "boolean",
+        "description": "定期回顾提醒",
+        "default": true
+      }
+    },
+    "additionalProperties": false
+  }
+}
