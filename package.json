@@ -1,0 +1,40 @@
+{
+  "name": "@zsc-glitch/knowledge-keeper",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "智能知识管理插件 - 自动提取对话要点、整理知识库、语义搜索",
+  "main": "src/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "knowledge",
+    "memory",
+    "notes"
+  ],
+  "author": "zsc-glitch",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zsc-glitch/knowledge-keeper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zsc-glitch/knowledge-keeper/issues"
+  },
+  "homepage": "https://github.com/zsc-glitch/knowledge-keeper#readme",
+  "openclaw": {
+    "extensions": ["./src/index.js"]
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
