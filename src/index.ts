@@ -57,12 +57,11 @@ function getVaultDir(config?: PluginConfig): string {
   return dir.replace("~", os.homedir());
 }
 
-// 生成知识点 ID
+// 生成知识点 ID（时间戳 + 8位随机）
 function generateId(): string {
-  const date = new Date();
-  const dateStr = date.toISOString().slice(0, 10).replace(/-/g, "");
-  const rand = Math.random().toString(36).slice(2, 5);
-  return `kp-${dateStr}-${rand}`;
+  const timestamp = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `kp-${timestamp}-${rand}`;
 }
 
 // 确保目录存在
@@ -279,7 +278,11 @@ async function updateIndex(
       }
     }
 
-    await fs.writeFile(indexPath, JSON.stringify(index, null, 2), "utf-8");
+    // 原子写入：tmp + rename
+    const indexPath = path.join(vaultDir, "index.json");
+    const tmpPath = path.join(vaultDir, "index.json.tmp");
+    await fs.writeFile(tmpPath, JSON.stringify(index, null, 2), "utf-8");
+    await fs.rename(tmpPath, indexPath);
   });
 }
 
