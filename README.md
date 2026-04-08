@@ -9,6 +9,7 @@
 - ✅ **知识回顾** - 按时间范围回顾，统计报告
 - ✅ **Markdown 存储** - 兼容 Obsidian、Notion 等笔记软件
 - ✅ **审计日志** - 记录所有操作，完整性验证（v0.4.0 新增）
+- ✅ **版本历史** - 记录版本变更，支持回滚（v0.5.0 新增）
 
 ## 安装
 
@@ -97,6 +98,39 @@ openclaw plugins install /path/to/knowledge-keeper
 │   └── audit-YYYY-MM-DD.jsonl
 └── index.json      # 索引文件
 ```
+
+## 版本历史功能
+
+v0.5.0 新增版本历史，支持知识点版本追踪和回滚：
+
+### 功能特性
+
+| 功能 | 说明 |
+|------|------|
+| 版本记录 | 每次更新自动保存版本 |
+| 版本对比 | 对比两个版本差异 |
+| 版本回滚 | 回滚到任意历史版本 |
+| 版本清理 | 自动清理过期版本（默认30天） |
+
+### 版本工具
+
+- `knowledge_versions` - 查看版本历史
+- `knowledge_version_get` - 获取指定版本
+- `knowledge_version_compare` - 版本对比
+- `knowledge_version_rollback` - 版本回滚
+- `knowledge_version_stats` - 版本统计
+- `knowledge_version_cleanup` - 清理过期版本
+
+### 版本存储结构
+
+```
+~/.knowledge-vault/.versions/
+├── kp-xxx/           # 每个知识点一个目录
+│   └── versions.jsonl
+└── index.json        # 版本索引
+```
+
+---
 
 ## 审计日志功能
 

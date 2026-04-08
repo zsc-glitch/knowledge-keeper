@@ -1,6 +1,6 @@
 {
   "name": "@zsc-glitch/knowledge-keeper",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "智能知识管理插件 - 自动提取对话要点、整理知识库、语义搜索",
   "main": "src/index.js",

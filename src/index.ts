@@ -16,6 +16,16 @@ import {
   getAuditStats,
   AuditAction,
 } from "./audit.js";
+import {
+  saveVersion,
+  listVersions,
+  getVersion,
+  getLatestVersion,
+  cleanupExpiredVersions,
+  getVersionStats,
+  verifyVersionIntegrity,
+  compareVersions,
+} from "./version.js";
 
 // 知识类型
 type KnowledgeType = "concept" | "decision" | "todo" | "note" | "project";
@@ -721,6 +731,13 @@ export default definePluginEntry({
             after: { title: kp.title, content: kp.content, tags: kp.tags, links: kp.links },
             source: "conversation",
           });
+
+          // 保存版本历史
+          await saveVersion(vaultDir, kp.id, kp.content, {
+            title: kp.title,
+            tags: kp.tags,
+            links: kp.links,
+          }, "conversation");
 
           const linksInfo = kp.links.length > 0
             ? `\n关联: ${kp.links.join(", ")}`
@@ -1752,6 +1769,352 @@ export default definePluginEntry({
               {
                 type: "text",
                 text: `✅ 清理完成\n\n删除 ${result.deletedFiles} 个文件\n清理 ${result.deletedEntries} 条日志`,
+              },
+            ],
+            details: result,
+          };
+        } catch (error) {
+          const { text, details } = formatErrorResponse(error);
+          return {
+            content: [{ type: "text", text }],
+            details,
+          };
+        }
+      },
+    }, { optional: true });
+
+    // ==================== 版本历史查询 ====================
+    api.registerTool({
+      name: "knowledge_versions",
+      label: "版本历史",
+      description: "查看知识点的版本历史记录。",
+      parameters: Type.Object({
+        id: Type.String({ description: "知识点 ID" }),
+        limit: Type.Optional(Type.Number({ description: "返回数量限制（默认 10）" })),
+      }),
+      async execute(toolCallId, params) {
+        try {
+          const vaultDir = getVaultDir(pluginConfig);
+          const versions = await listVersions(vaultDir, params.id);
+          const limit = Math.min(params.limit || 10, 50);
+
+          if (versions.length === 0) {
+            return {
+              content: [
+                { type: "text", text: `📭 知识点 "${params.id}" 暂无版本历史` },
+              ],
+              details: { count: 0, knowledgeId: params.id },
+            };
+          }
+
+          const displayVersions = versions.slice(0, limit);
+          const versionsText = displayVersions
+            .map((v, i) => {
+              const time = new Date(v.timestamp).toLocaleString("zh-CN");
+              const sourceLabel = v.source === "rollback" ? "（回滚）" : "";
+              return `${i + 1}. **版本 ${v.versionNumber}**${sourceLabel}\n   时间: ${time}\n   标题: ${v.metadata.title}\n   标签: ${v.metadata.tags.join(", ") || "无"}`;
+            })
+            .join("\n\n");
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `📜 版本历史 (${versions.length} 个版本)\n\n知识点: ${params.id}\n\n${versionsText}`,
+              },
+            ],
+            details: { count: versions.length, versions: displayVersions },
+          };
+        } catch (error) {
+          const { text, details } = formatErrorResponse(error);
+          return {
+            content: [{ type: "text", text }],
+            details,
+          };
+        }
+      },
+    }, { optional: true });
+
+    // ==================== 获取指定版本 ====================
+    api.registerTool({
+      name: "knowledge_version_get",
+      label: "获取版本",
+      description: "获取知识点的指定版本内容。",
+      parameters: Type.Object({
+        id: Type.String({ description: "知识点 ID" }),
+        version: Type.Number({ description: "版本号" }),
+      }),
+      async execute(toolCallId, params) {
+        try {
+          const vaultDir = getVaultDir(pluginConfig);
+          const version = await getVersion(vaultDir, params.id, params.version);
+
+          if (!version) {
+            return {
+              content: [
+                { type: "text", text: `❌ 未找到版本 ${params.version}` },
+              ],
+              details: { error: true, notFound: true },
+            };
+          }
+
+          const time = new Date(version.timestamp).toLocaleString("zh-CN");
+          const linksInfo = version.metadata.links.length > 0
+            ? `\n关联: ${version.metadata.links.join(", ")}`
+            : "";
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `📜 **版本 ${version.versionNumber}**\n\n知识点: ${params.id}\n时间: ${time}\n来源: ${version.source}\n\n📝 **${version.metadata.title}**\n标签: ${version.metadata.tags.join(", ") || "无"}${linksInfo}\n\n---\n\n${version.content}`,
+              },
+            ],
+            details: { version },
+          };
+        } catch (error) {
+          const { text, details } = formatErrorResponse(error);
+          return {
+            content: [{ type: "text", text }],
+            details,
+          };
+        }
+      },
+    }, { optional: true });
+
+    // ==================== 版本对比 ====================
+    api.registerTool({
+      name: "knowledge_version_compare",
+      label: "版本对比",
+      description: "对比知识点的两个版本之间的差异。",
+      parameters: Type.Object({
+        id: Type.String({ description: "知识点 ID" }),
+        version1: Type.Number({ description: "第一个版本号" }),
+        version2: Type.Number({ description: "第二个版本号" }),
+      }),
+      async execute(toolCallId, params) {
+        try {
+          const vaultDir = getVaultDir(pluginConfig);
+          const result = await compareVersions(vaultDir, params.id, params.version1, params.version2);
+
+          if (!result.version1 || !result.version2) {
+            return {
+              content: [
+                { type: "text", text: `❌ 无法找到指定版本进行对比` },
+              ],
+              details: { error: true },
+            };
+          }
+
+          const changes = result.changes;
+          const changeList: string[] = [];
+
+          if (changes.titleChanged) {
+            changeList.push(`标题: "${result.version1.metadata.title}" → "${result.version2.metadata.title}"`);
+          }
+          if (changes.tagsAdded.length > 0) {
+            changeList.push(`新增标签: ${changes.tagsAdded.join(", ")}`);
+          }
+          if (changes.tagsRemoved.length > 0) {
+            changeList.push(`移除标签: ${changes.tagsRemoved.join(", ")}`);
+          }
+          if (changes.linksAdded.length > 0) {
+            changeList.push(`新增关联: ${changes.linksAdded.join(", ")}`);
+          }
+          if (changes.linksRemoved.length > 0) {
+            changeList.push(`移除关联: ${changes.linksRemoved.join(", ")}`);
+          }
+          if (changes.contentChanged) {
+            changeList.push(`内容已修改`);
+          }
+
+          if (changeList.length === 0) {
+            return {
+              content: [
+                { type: "text", text: `✅ 版本 ${params.version1} 和 ${params.version2} 完全相同，无差异` },
+              ],
+              details: { noChanges: true },
+            };
+          }
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `🔍 版本对比\n\n知识点: ${params.id}\n对比: 版本 ${params.version1} → 版本 ${params.version2}\n\n变化:\n${changeList.map(c => `- ${c}`).join("\n")}`,
+              },
+            ],
+            details: { changes },
+          };
+        } catch (error) {
+          const { text, details } = formatErrorResponse(error);
+          return {
+            content: [{ type: "text", text }],
+            details,
+          };
+        }
+      },
+    }, { optional: true });
+
+    // ==================== 版本回滚 ====================
+    api.registerTool({
+      name: "knowledge_version_rollback",
+      label: "版本回滚",
+      description: "将知识点回滚到指定版本。",
+      parameters: Type.Object({
+        id: Type.String({ description: "知识点 ID" }),
+        version: Type.Number({ description: "目标版本号" }),
+      }),
+      async execute(toolCallId, params) {
+        try {
+          const vaultDir = getVaultDir(pluginConfig);
+
+          // 获取当前知识点
+          const currentResult = await loadKnowledgeById(vaultDir, params.id);
+          if (!currentResult) {
+            return {
+              content: [
+                { type: "text", text: `❌ 未找到知识点: ${params.id}` },
+              ],
+              details: { error: true, notFound: true },
+            };
+          }
+
+          const { kp: currentKp, filepath } = currentResult;
+
+          // 获取目标版本
+          const targetVersion = await getVersion(vaultDir, params.id, params.version);
+          if (!targetVersion) {
+            return {
+              content: [
+                { type: "text", text: `❌ 未找到版本 ${params.version}` },
+              ],
+              details: { error: true, notFound: true },
+            };
+          }
+
+          // 保存回滚前的状态作为审计记录
+          const beforeState = {
+            title: currentKp.title,
+            content: currentKp.content,
+            tags: [...currentKp.tags],
+            links: [...(currentKp.links || [])],
+          };
+
+          // 回滚到目标版本
+          currentKp.title = targetVersion.metadata.title;
+          currentKp.content = targetVersion.content;
+          currentKp.tags = [...targetVersion.metadata.tags];
+          currentKp.links = [...targetVersion.metadata.links];
+          currentKp.updated = new Date().toISOString();
+
+          // 写回文件
+          await fs.writeFile(filepath, formatMarkdown(currentKp), "utf-8");
+          await updateIndex(vaultDir, currentKp, "update");
+
+          // 保存回滚后的版本历史
+          await saveVersion(vaultDir, params.id, targetVersion.content, {
+            title: targetVersion.metadata.title,
+            tags: targetVersion.metadata.tags,
+            links: targetVersion.metadata.links,
+          }, "rollback");
+
+          // 记录审计日志
+          await logAudit(vaultDir, "update", {
+            knowledgeId: params.id,
+            knowledgeTitle: currentKp.title,
+            details: { rollbackTo: params.version },
+            before: beforeState,
+            after: { title: currentKp.title, content: currentKp.content, tags: currentKp.tags, links: currentKp.links },
+            source: "rollback",
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✅ 已回滚到版本 ${params.version}\n\n📝 **${currentKp.title}**\n类型: ${currentKp.type}\nID: ${params.id}`,
+              },
+            ],
+            details: { rollbackTo: params.version, currentVersion: targetVersion.versionNumber },
+          };
+        } catch (error) {
+          const { text, details } = formatErrorResponse(error);
+          return {
+            content: [{ type: "text", text }],
+            details,
+          };
+        }
+      },
+    }, { optional: true });
+
+    // ==================== 版本统计 ====================
+    api.registerTool({
+      name: "knowledge_version_stats",
+      label: "版本统计",
+      description: "获取版本历史的统计数据。",
+      parameters: Type.Object({}),
+      async execute(toolCallId, params) {
+        try {
+          const vaultDir = getVaultDir(pluginConfig);
+          const stats = await getVersionStats(vaultDir);
+
+          if (stats.totalKnowledgeIds === 0) {
+            return {
+              content: [
+                { type: "text", text: "📊 版本统计\n\n暂无版本历史记录" },
+              ],
+              details: stats,
+            };
+          }
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `📊 版本统计\n\n知识点数: ${stats.totalKnowledgeIds}\n总版本数: ${stats.totalVersions}\n平均版本数: ${stats.avgVersions.toFixed(1)}\n最大版本数: ${stats.maxVersions}`,
+              },
+            ],
+            details: stats,
+          };
+        } catch (error) {
+          const { text, details } = formatErrorResponse(error);
+          return {
+            content: [{ type: "text", text }],
+            details,
+          };
+        }
+      },
+    }, { optional: true });
+
+    // ==================== 清理过期版本 ====================
+    api.registerTool({
+      name: "knowledge_version_cleanup",
+      label: "清理版本",
+      description: "清理过期的版本历史（默认保留 30 天）。",
+      parameters: Type.Object({
+        retentionDays: Type.Optional(Type.Number({ description: "保留天数（默认 30）" })),
+      }),
+      async execute(toolCallId, params) {
+        try {
+          const vaultDir = getVaultDir(pluginConfig);
+          const retention = params.retentionDays || 30;
+          const result = await cleanupExpiredVersions(vaultDir, retention);
+
+          if (result.versionsDeleted === 0) {
+            return {
+              content: [
+                { type: "text", text: `✅ 无需清理\n\n所有版本都在保留期内 (${retention} 天)` },
+              ],
+              details: result,
+            };
+          }
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✅ 清理完成\n\n清理 ${result.knowledgeIds} 个知识点\n删除 ${result.versionsDeleted} 个版本`,
               },
             ],
             details: result,
