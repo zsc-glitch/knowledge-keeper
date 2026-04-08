@@ -7,6 +7,7 @@ import { Type } from "@sinclair/typebox";
 import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
+import { logAudit, readAuditLogs, verifyAuditIntegrity, cleanupAuditLogs, getAuditStats, } from "./audit";
 // 错误类型
 class KnowledgeError extends Error {
     code;
@@ -332,6 +333,14 @@ export default definePluginEntry({
                     await fs.writeFile(filepath, markdown, "utf-8");
                     // 更新索引
                     await updateIndex(vaultDir, kp, "add");
+                    // 记录审计日志
+                    await logAudit(vaultDir, "save", {
+                        knowledgeId: kp.id,
+                        knowledgeTitle: kp.title,
+                        details: { type: kp.type, tags: kp.tags, links: kp.links },
+                        after: { title: kp.title, content: kp.content, tags: kp.tags, links: kp.links },
+                        source: "conversation",
+                    });
                     const linksInfo = kp.links.length > 0
                         ? `\n关联: ${kp.links.join(", ")}`
                         : "";
@@ -551,6 +560,13 @@ export default definePluginEntry({
                         };
                     }
                     const { kp, filepath } = result;
+                    // 保存操作前状态用于审计
+                    const beforeState = {
+                        title: kp.title,
+                        content: kp.content,
+                        tags: [...kp.tags],
+                        links: [...(kp.links || [])],
+                    };
                     // 验证新的关联
                     let newLinks = [];
                     if (params.links) {
@@ -589,6 +605,15 @@ export default definePluginEntry({
                     await fs.writeFile(filepath, markdown, "utf-8");
                     // 更新索引
                     await updateIndex(vaultDir, kp, "update");
+                    // 记录审计日志
+                    await logAudit(vaultDir, "update", {
+                        knowledgeId: kp.id,
+                        knowledgeTitle: kp.title,
+                        details: { changes: { title: params.title, content: params.content, tags: params.tags || params.appendTags, links: params.links || params.appendLinks } },
+                        before: beforeState,
+                        after: { title: kp.title, content: kp.content, tags: kp.tags, links: kp.links },
+                        source: "conversation",
+                    });
                     const linksInfo = kp.links.length > 0
                         ? `\n关联: ${kp.links.join(", ")}`
                         : "";
@@ -635,6 +660,14 @@ export default definePluginEntry({
                         };
                     }
                     const { kp, filepath } = result;
+                    // 记录审计日志（删除前）
+                    await logAudit(vaultDir, "delete", {
+                        knowledgeId: kp.id,
+                        knowledgeTitle: kp.title,
+                        details: { type: kp.type },
+                        before: { title: kp.title, content: kp.content, tags: kp.tags, links: kp.links },
+                        source: "conversation",
+                    });
                     // 删除文件
                     await fs.unlink(filepath);
                     // 更新索引
@@ -920,6 +953,14 @@ export default definePluginEntry({
                             await updateIndex(vaultDir, targetKp, "update");
                         }
                     }
+                    // 记录审计日志
+                    await logAudit(vaultDir, "link", {
+                        knowledgeId: params.id,
+                        knowledgeTitle: sourceKp.title,
+                        details: { targetId: params.targetId, targetTitle: targetKp.title, bidirectional },
+                        after: { links: sourceKp.links },
+                        source: "conversation",
+                    });
                     const linkType = bidirectional ? "双向" : "单向";
                     return {
                         content: [
@@ -989,6 +1030,16 @@ export default definePluginEntry({
                                 await updateIndex(vaultDir, targetKp, "update");
                             }
                         }
+                    }
+                    // 记录审计日志（如果确实有移除操作）
+                    if (hadLink) {
+                        await logAudit(vaultDir, "unlink", {
+                            knowledgeId: params.id,
+                            knowledgeTitle: sourceKp.title,
+                            details: { targetId: params.targetId, bidirectional },
+                            after: { links: sourceKp.links },
+                            source: "conversation",
+                        });
                     }
                     if (!hadLink) {
                         return {
@@ -1306,6 +1357,11 @@ export default definePluginEntry({
                     }
                     const indexPath = path.join(vaultDir, "index.json");
                     await fs.writeFile(indexPath, JSON.stringify(newIndex, null, 2), "utf-8");
+                    // 记录审计日志
+                    await logAudit(vaultDir, "rename_tag", {
+                        details: { oldTag: params.oldTag, newTag: params.newTag, updatedCount },
+                        source: "conversation",
+                    });
                     return {
                         content: [
                             {
@@ -1314,6 +1370,206 @@ export default definePluginEntry({
                             },
                         ],
                         details: { oldTag: params.oldTag, newTag: params.newTag, updatedCount },
+                    };
+                }
+                catch (error) {
+                    const { text, details } = formatErrorResponse(error);
+                    return {
+                        content: [{ type: "text", text }],
+                        details,
+                    };
+                }
+            },
+        }, { optional: true });
+        // ==================== 审计日志查询 ====================
+        api.registerTool({
+            name: "knowledge_audit_logs",
+            label: "审计日志",
+            description: "查询知识库操作审计日志。支持按日期、操作类型、知识点 ID 等筛选。",
+            parameters: Type.Object({
+                startDate: Type.Optional(Type.String({ description: "开始日期 (YYYY-MM-DD)" })),
+                endDate: Type.Optional(Type.String({ description: "结束日期 (YYYY-MM-DD)" })),
+                action: Type.Optional(Type.String({ description: "操作类型: save/update/delete/link/unlink/export/rename_tag" })),
+                knowledgeId: Type.Optional(Type.String({ description: "知识点 ID" })),
+                limit: Type.Optional(Type.Number({ description: "返回数量限制（默认 50）" })),
+            }),
+            async execute(toolCallId, params) {
+                try {
+                    const vaultDir = getVaultDir(pluginConfig);
+                    const logs = await readAuditLogs(vaultDir, {
+                        startDate: params.startDate,
+                        endDate: params.endDate,
+                        action: params.action,
+                        knowledgeId: params.knowledgeId,
+                        limit: params.limit || 50,
+                    });
+                    if (logs.length === 0) {
+                        return {
+                            content: [
+                                { type: "text", text: "📭 未找到审计日志记录" },
+                            ],
+                            details: { count: 0 },
+                        };
+                    }
+                    const logsText = logs
+                        .map((log, i) => {
+                        const actionLabels = {
+                            save: "保存",
+                            update: "更新",
+                            delete: "删除",
+                            link: "关联",
+                            unlink: "取消关联",
+                            export: "导出",
+                            rename_tag: "重命名标签",
+                            system_init: "系统初始化",
+                        };
+                        const time = new Date(log.timestamp).toLocaleString("zh-CN");
+                        const titleInfo = log.knowledgeTitle ? ` - ${log.knowledgeTitle}` : "";
+                        const idInfo = log.knowledgeId ? ` (${log.knowledgeId})` : "";
+                        return `${i + 1}. **${actionLabels[log.action]}**${titleInfo}${idInfo}\n   时间: ${time}\n   来源: ${log.source}`;
+                    })
+                        .join("\n\n");
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `📋 审计日志 (${logs.length} 条)\n\n${logsText}`,
+                            },
+                        ],
+                        details: { count: logs.length, logs },
+                    };
+                }
+                catch (error) {
+                    const { text, details } = formatErrorResponse(error);
+                    return {
+                        content: [{ type: "text", text }],
+                        details,
+                    };
+                }
+            },
+        }, { optional: true });
+        // ==================== 审计完整性验证 ====================
+        api.registerTool({
+            name: "knowledge_audit_verify",
+            label: "验证审计完整性",
+            description: "验证审计日志的完整性，检查哈希链是否完整，日志是否被篡改。",
+            parameters: Type.Object({}),
+            async execute(toolCallId, params) {
+                try {
+                    const vaultDir = getVaultDir(pluginConfig);
+                    const result = await verifyAuditIntegrity(vaultDir);
+                    if (result.valid) {
+                        return {
+                            content: [
+                                {
+                                    type: "text",
+                                    text: `✅ 审计日志完整性验证通过\n\n共 ${result.totalEntries} 条日志，哈希链完整，无篡改`,
+                                },
+                            ],
+                            details: { valid: true, totalEntries: result.totalEntries },
+                        };
+                    }
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `❌ 审计日志完整性验证失败\n\n发现 ${result.errors.length} 个问题:\n${result.errors.map(e => `- ${e}`).join("\n")}`,
+                            },
+                        ],
+                        details: { valid: false, errors: result.errors, totalEntries: result.totalEntries },
+                    };
+                }
+                catch (error) {
+                    const { text, details } = formatErrorResponse(error);
+                    return {
+                        content: [{ type: "text", text }],
+                        details,
+                    };
+                }
+            },
+        }, { optional: true });
+        // ==================== 审计统计 ====================
+        api.registerTool({
+            name: "knowledge_audit_stats",
+            label: "审计统计",
+            description: "获取审计日志的统计信息，包括操作类型分布、时间范围等。",
+            parameters: Type.Object({}),
+            async execute(toolCallId, params) {
+                try {
+                    const vaultDir = getVaultDir(pluginConfig);
+                    const stats = await getAuditStats(vaultDir);
+                    if (stats.totalEntries === 0) {
+                        return {
+                            content: [
+                                { type: "text", text: "📊 审计统计\n\n暂无审计日志记录" },
+                            ],
+                            details: stats,
+                        };
+                    }
+                    const actionLabels = {
+                        save: "保存",
+                        update: "更新",
+                        delete: "删除",
+                        link: "关联",
+                        unlink: "取消关联",
+                        export: "导出",
+                        rename_tag: "重命名标签",
+                        system_init: "系统初始化",
+                    };
+                    const breakdownText = Object.entries(stats.actionsBreakdown)
+                        .filter(([, count]) => count > 0)
+                        .map(([action, count]) => `- ${actionLabels[action]}: ${count} 次`)
+                        .join("\n");
+                    const oldest = stats.oldestEntry ? new Date(stats.oldestEntry).toLocaleDateString("zh-CN") : "无";
+                    const newest = stats.newestEntry ? new Date(stats.newestEntry).toLocaleDateString("zh-CN") : "无";
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `📊 审计统计\n\n总日志数: ${stats.totalEntries}\n日志文件数: ${stats.totalFiles}\n时间范围: ${oldest} ~ ${newest}\n\n操作分布:\n${breakdownText}`,
+                            },
+                        ],
+                        details: stats,
+                    };
+                }
+                catch (error) {
+                    const { text, details } = formatErrorResponse(error);
+                    return {
+                        content: [{ type: "text", text }],
+                        details,
+                    };
+                }
+            },
+        }, { optional: true });
+        // ==================== 清理过期审计日志 ====================
+        api.registerTool({
+            name: "knowledge_audit_cleanup",
+            label: "清理审计日志",
+            description: "清理过期的审计日志（默认保留 90 天）。",
+            parameters: Type.Object({
+                retentionDays: Type.Optional(Type.Number({ description: "保留天数（默认 90）" })),
+            }),
+            async execute(toolCallId, params) {
+                try {
+                    const vaultDir = getVaultDir(pluginConfig);
+                    const retention = params.retentionDays || 90;
+                    const result = await cleanupAuditLogs(vaultDir, retention);
+                    if (result.deletedFiles === 0) {
+                        return {
+                            content: [
+                                { type: "text", text: `✅ 无需清理\n\n所有审计日志都在保留期内 (${retention} 天)` },
+                            ],
+                            details: result,
+                        };
+                    }
+                    return {
+                        content: [
+                            {
+                                type: "text",
+                                text: `✅ 清理完成\n\n删除 ${result.deletedFiles} 个文件\n清理 ${result.deletedEntries} 条日志`,
+                            },
+                        ],
+                        details: result,
                     };
                 }
                 catch (error) {
