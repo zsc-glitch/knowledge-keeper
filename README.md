@@ -10,18 +10,25 @@
 - ✅ **Markdown 存储** - 兼容 Obsidian、Notion 等笔记软件
 - ✅ **审计日志** - 记录所有操作，完整性验证（v0.4.0 新增）
 - ✅ **版本历史** - 记录版本变更，支持回滚（v0.5.0 新增）
+- 🆕 **MCP 支持** - 可被 Claude Code、Cursor、Gemini CLI 调用
 
 ## 安装
+
+### OpenClaw 插件
 
 ```bash
 openclaw plugins install @openclaw/knowledge-keeper
 ```
 
-或者从本地安装：
+### MCP Server（独立版）
+
+支持 Claude Code、Cursor、Gemini CLI、Windsurf：
 
 ```bash
-openclaw plugins install /path/to/knowledge-keeper
+npm install @zsc-glitch/knowledge-keeper-mcp@alpha
 ```
+
+详见 [knowledge-keeper-mcp](../knowledge-keeper-mcp/README.md)
 
 ## 使用方法
 
