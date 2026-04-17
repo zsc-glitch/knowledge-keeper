@@ -205,3 +205,15 @@ MIT
 ---
 
 Made with 🧠 by 小影
+---
+
+## ☕ 支持开发者
+
+如果这些工具对你有帮助，欢迎请我喝杯咖啡 ☕
+
+![微信赞赏码](https://raw.githubusercontent.com/zsc-glitch/assets/main/wechat-pay.png)
+
+---
+
+Made with ❤️ by [小影](https://github.com/zsc-glitch)
+
